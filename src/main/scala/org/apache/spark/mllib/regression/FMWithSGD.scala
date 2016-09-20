@@ -1,6 +1,5 @@
 package org.apache.spark.mllib.regression
 
-import org.apache.spark.Logging
 import org.apache.spark.mllib.linalg.{DenseMatrix, Vectors, Vector}
 import org.apache.spark.mllib.optimization.GradientDescent
 import org.apache.spark.rdd.RDD
@@ -47,8 +46,23 @@ object FMWithSGD {
 
   def train(input: RDD[LabeledPoint],
             task: Int,
+            numIterations: Int,
+            stepSize: Double,
+            miniBatchFraction: Double,
+            dim: (Boolean, Boolean, Int),
+            regParam: (Double, Double, Double),
+            initStd: Double,
+            allWeights: Option[Vector]): FMModel = {
+    new FMWithSGD(task, stepSize, numIterations, dim, regParam, miniBatchFraction)
+      .setInitStd(initStd)
+      .setWeights(allWeights)
+      .run(input)
+  }
+
+  def train(input: RDD[LabeledPoint],
+            task: Int,
             numIterations: Int): FMModel = {
-    new FMWithSGD(task, 1.0, numIterations, (true, true, 8), (0, 1e-3, 1e-4), 1e-5)
+    new FMWithSGD(task, 1.0, numIterations, (true, true, 8), (0, 1e-3, 1e-4), 1.0)
       .setInitStd(0.01)
       .run(input)
   }
@@ -60,14 +74,14 @@ class FMWithSGD(private var task: Int,
                 private var numIterations: Int,
                 private var dim: (Boolean, Boolean, Int),
                 private var regParam: (Double, Double, Double),
-                private var miniBatchFraction: Double) extends Serializable with Logging {
+                private var miniBatchFraction: Double) extends Serializable {
 
 
   /**
     * Construct an object with default parameters: {task: 0, stepSize: 1.0, numIterations: 100,
     * dim: (true, true, 8), regParam: (0, 0.01, 0.01), miniBatchFraction: 1.0}.
     */
-  def this() = this(0, 1.0, 100, (true, true, 8), (0, 1e-3, 1e-4), 1e-5)
+  def this() = this(0, 1.0, 100, (true, true, 8), (0, 1e-3, 1e-4), 1.0)
 
   private var k0: Boolean = dim._1
   private var k1: Boolean = dim._2
@@ -84,6 +98,8 @@ class FMWithSGD(private var task: Int,
   private var minLabel: Double = Double.MaxValue
   private var maxLabel: Double = Double.MinValue
 
+  private var allWeights: Option[Vector] = None
+
   /**
     * A (Boolean,Boolean,Int) 3-Tuple stands for whether the global bias term should be used, whether the one-way
     * interactions should be used, and the number of factors that are used for pairwise interactions, respectively.
@@ -93,6 +109,11 @@ class FMWithSGD(private var task: Int,
     this.k0 = dim._1
     this.k1 = dim._2
     this.k2 = dim._3
+    this
+  }
+
+  def setWeights(weights: Option[Vector]): this.type = {
+    this.allWeights = weights
     this
   }
 
@@ -207,7 +228,7 @@ class FMWithSGD(private var task: Int,
 
     val w0 = if (k0) values.last else 0.0
 
-    new FMModel(task, v, w, w0, minLabel, maxLabel)
+    new FMModel(task, v, w, w0, minLabel, maxLabel, Some(weights))
   }
 
 
@@ -245,12 +266,12 @@ class FMWithSGD(private var task: Int,
 
     val data = task match {
       case 0 =>
-        input.map(l => (l.label, l.features)).persist()
+        input.map(l => (l.label, l.features))
       case 1 =>
-        input.map(l => (if (l.label > 0) 1.0 else -1.0, l.features)).persist()
+        input.map(l => (if (l.label > 0) 1.0 else -1.0, l.features))
     }
 
-    val initWeights = generateInitWeights()
+    val initWeights = if(allWeights.isEmpty) generateInitWeights() else allWeights.get
 
     val weights = optimizer.optimize(data, initWeights)
 

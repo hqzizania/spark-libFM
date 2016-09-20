@@ -6,7 +6,7 @@ import org.json4s.jackson.JsonMethods._
 
 import scala.util.Random
 
-import org.apache.spark.{SparkContext, Logging}
+import org.apache.spark.{SparkContext}
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.optimization.{Updater, Gradient}
 import org.apache.spark.rdd.RDD
@@ -27,7 +27,8 @@ class FMModel(val task: Int,
               val weightVector: Option[Vector],
               val intercept: Double,
               val min: Double,
-              val max: Double) extends Serializable with Saveable {
+              val max: Double,
+              val allWeight: Option[Vector]) extends Serializable with Saveable {
 
   val numFeatures = factorMatrix.numCols
   val numFactors = factorMatrix.numRows
@@ -55,7 +56,7 @@ class FMModel(val task: Int,
           sum += d
           sumSqr += d * d
       }
-      pred += (sum * sum - sumSqr) / 2
+      pred += (sum * sum - sumSqr) * 0.5
     }
 
     task match {
@@ -107,7 +108,7 @@ object FMModel extends Loader[FMModel] {
 
       // Create Parquet data.
       val dataRDD: DataFrame = sc.parallelize(Seq(data), 1).toDF()
-      dataRDD.saveAsParquetFile(dataPath(path))
+      dataRDD.write.parquet(dataPath(path))
     }
 
     def load(sc: SparkContext, path: String): FMModel = {
@@ -125,7 +126,7 @@ object FMModel extends Loader[FMModel] {
       val intercept = data.getDouble(3)
       val min = data.getDouble(4)
       val max = data.getDouble(5)
-      new FMModel(task, factorMatrix, weightVector, intercept, min, max)
+      new FMModel(task, factorMatrix, weightVector, intercept, min, max, None)
     }
   }
 
@@ -189,7 +190,7 @@ class FMGradient(val task: Int, val k0: Boolean, val k1: Boolean, val k2: Int,
           sum(f) += d
           sumSqr += d * d
       }
-      pred += (sum(f) * sum(f) - sumSqr) / 2
+      pred += (sum(f) * sum(f) - sumSqr) * 0.5
     }
 
     if (task == 0) {
@@ -275,27 +276,27 @@ class FMUpdater(val k0: Boolean, val k1: Boolean, val k2: Int,
                        stepSize: Double, iter: Int, regParam: Double): (Vector, Double) = {
     val thisIterStepSize = stepSize / math.sqrt(iter)
     val len = weightsOld.size
-
-    val weightsNew = Array.fill(len)(0.0)
+    val weights: Array[Double] = weightsOld.toArray.clone()
     var regVal = 0.0
 
     if (k0) {
-      weightsNew(len - 1) = weightsOld(len - 1) - thisIterStepSize * (gradient(len - 1) + r0 * weightsOld(len - 1))
-      regVal += r0 * weightsNew(len - 1) * weightsNew(len - 1)
+      weights(len - 1) = weights(len - 1) - thisIterStepSize * (gradient(len - 1) + r0 * weights(len - 1))
+      regVal += r0 * weights(len - 1) * weights(len - 1)
     }
 
     if (k1) {
       for (i <- numFeatures * k2 until numFeatures * k2 + numFeatures) {
-        weightsNew(i) = weightsOld(i) - thisIterStepSize * (gradient(i) + r1 * weightsOld(i))
-        regVal += r1 * weightsNew(i) * weightsNew(i)
+        weights(i) = weights(i) - thisIterStepSize * (gradient(i) + r1 * weights(i))
+        regVal += r1 * weights(i) * weights(i)
       }
     }
 
     for (i <- 0 until numFeatures * k2) {
-      weightsNew(i) = weightsOld(i) - thisIterStepSize * (gradient(i) + r2 * weightsOld(i))
-      regVal += r2 * weightsNew(i) * weightsNew(i)
+      weights(i) = weights(i) - thisIterStepSize * (gradient(i) + r2 * weights(i))
+      regVal += r2 * weights(i) * weights(i)
     }
 
-    (Vectors.dense(weightsNew), regVal / 2)
+    (Vectors.dense(weights), regVal * 0.5)
+
   }
 }
